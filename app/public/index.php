@@ -14,9 +14,11 @@ declare(strict_types=1);
  * will be wired in here.
  */
 
+use App\Config\Config;
 use App\Health;
 
-require __DIR__ . '/../vendor/autoload.php';
+/** @var Config $config */
+$config = require __DIR__ . '/../bootstrap.php';
 
 $health = new Health();
 

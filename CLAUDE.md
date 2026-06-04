@@ -92,12 +92,46 @@ and uses this project deliberately for learning. Therefore:
 - Treat delivery as **at-least-once**: handlers must be **idempotent**
   (dedupe by provider event id).
 
-## Workflow with sub-agents
+## Subtask execution workflow (STANDARD OPERATING PROCEDURE)
 
-1. **architect** — turns a task into a spec, a task breakdown and an ADR. No code.
-2. (main agent) — implements according to the approved spec.
-3. **reviewer** — reviews the diff against the spec & conventions. No fixes, only a report.
-4. **mentor** — writes a Ukrainian learning note explaining the finished feature.
+**Trigger.** When the user says any of: "do task X", "виконай TX.Y", "go to TX.Y",
+"зроби підзадачу …", or names a subtask id from
+`.claude/tasks/webhook-handler.tasks.md` — run the FULL pipeline below for that
+ONE subtask, without asking the user to restate the rules. Do one subtask per
+request, in task-file order, unless the user says otherwise.
+
+**Pipeline (always all four stages, in this order):**
+
+1. **architect** (`backend-architect` sub-agent) — designs the subtask: restate
+   the problem, account for the current code state, weigh 2–3 approaches, recommend
+   one, and record an **ADR** in `.claude/decisions/NNNN-*.md` *only when there is a
+   genuine architectural choice*. The architect does **not** write feature code.
+   Resolve its "Open questions" yourself with sensible defaults (state them).
+2. **(main agent — me)** — implement the code per the architect's plan, matching
+   `.claude/skills/php-conventions/SKILL.md`. Keep strictly to the subtask's scope;
+   do not bleed into later subtasks. Then **verify with real commands** (`php -l`,
+   `curl`, container CLI, SQL via the db container, etc.) — never fabricate output.
+3. **reviewer** (`code-reviewer` sub-agent) — reviews the implementation against the
+   spec and conventions; writes a report to `.claude/reviews/<subtask>-<date>.md` with
+   BLOCKER/MAJOR/MINOR/NIT severities. It does not fix code. I then apply or
+   consciously decline each finding (stating why) before moving on.
+4. **mentor** (`learning-mentor` sub-agent) — writes a Ukrainian learning note to
+   `.claude/learning/<subtask>.md`.
+
+**After the pipeline:** mark the subtask `[x]` in
+`.claude/tasks/webhook-handler.tasks.md` with the date and links to the
+review / ADR / learning note.
+
+**Standing rules for every subtask (do not need restating):**
+- Communicate with the user in **Ukrainian**.
+- **Any SQL query I run against the database MUST be reproduced in the mentor's
+  note** (a dedicated "Запити до бази даних" section — and if none were run, say so).
+- The **mentor note must explain and show EVERY step I took** (a "Покрокова хроніка"
+  section with the actual commands and their output), explain the "why", and show
+  alternative approaches with trade-offs.
+- The **mentor note must NOT include a self-check / questions section.**
+- Verify everything with real commands; report failures honestly.
+- Never write application code outside the scope of the requested subtask.
 
 ## Common commands
 

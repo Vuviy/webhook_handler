@@ -5,7 +5,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 
 ## Milestone 0: Skeleton & infra
 - [x] T0.1 — `composer.json`, PSR-4 (`App\` → `app/src/`), `app/public/index.php` front controller · S ✅ done 2026-06-04 (review: `.claude/reviews/T0.1-2026-06-04.md`, ADR: `0002`, note: `.claude/learning/T0.1-skeleton.md`)
-- [ ] T0.2 — Config loader reading env (DB, Redis, provider secrets) · S
+- [x] T0.2 — Config loader reading env (DB, Redis, provider secrets) · S ✅ done 2026-06-04 (review: `.claude/reviews/T0.2-2026-06-04.md`, ADR: `0003`, note: `.claude/learning/T0.2-config.md`)
 - [ ] T0.3 — DB connection (PDO) + migration runner; `webhook_events` migration · M · depends: T0.2
 - [ ] T0.4 — Redis client wrapper (`Queue`) · S · depends: T0.2
 
