@@ -2,7 +2,7 @@ version: '3'
 
 services:
   php:
-    container_name: rest_api_php
+    container_name: webhook_php
     build: './docker/php'
     volumes:
       - './app:/var/www/html'
@@ -13,45 +13,25 @@ services:
     volumes:
       - './app:/var/www/html'
       - './docker/nginx/conf.d:/etc/nginx/conf.d'
-  db_rest_api:
+  db_webhook:
       image: mysql:8.4
       environment:
         MYSQL_DATABASE: ${DB_DATABASE}
         MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       volumes:
         - mysql_data:/var/lib/mysql
-      container_name: db_rest_api
+      container_name: db_webhook
 
   phpmyadmin:
     image: phpmyadmin:5.2.1
     ports:
       - 8000:80
     environment:
-      PMA_HOST: db_rest_api
+      PMA_HOST: db_webhook
       PMA_USER: root
       PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     depends_on:
-      - db_rest_api
-
-  swagger:
-    image: swaggerapi/swagger-ui
-    ports:
-      - "8081:8080"
-    environment:
-      SWAGGER_JSON: /app/openapi.yaml
-    volumes:
-      - ./app/openapi.yaml:/app/openapi.yaml
-
-  redis:
-    image: redis:8.4.2
-    container_name: redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
+      - db_webhook
 
 volumes:
   mysql_data:
-  redis_data:
