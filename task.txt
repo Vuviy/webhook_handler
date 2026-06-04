@@ -1,0 +1,19 @@
+Webhook Handler
+
+Task description:
+Create a webhooks processing system from GitHub, Stripe, PayPal. Signature verification, retry logic, async processing.
+
+Technical requirements:
+• Signature verification for each service
+• HMAC-SHA256 for GitHub
+• Async processing via queue
+• Exponential backoff retry (3 attempts)
+• Dead letter queue for failed
+• Event log in the database
+
+Success criteria:
+✓ Signatures are verified
+✓ Queue processing is working
+✓ Retry logic is working
+✓ Failed webhooks are logged
+✓ Monitoring dashboard

@@ -1,28 +1,86 @@
-version: '3'
+# Local development environment for the Webhook Handler.
+# The Compose Specification no longer needs a top-level `version:` key.
 
 services:
+  # PHP-FPM: serves the HTTP ingestion endpoints (verify + persist + enqueue).
   php:
     container_name: webhook_php
     build: './docker/php'
+    working_dir: /var/www/html
     volumes:
       - './app:/var/www/html'
+    environment:
+      DB_HOST: db_webhook
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - db_webhook
+      - redis
+    restart: unless-stopped
+
+  # Nginx: HTTP front-end. Forwards *.php to PHP-FPM.
   nginx:
+    container_name: webhook_nginx
     image: nginx:1.27.2
     ports:
       - 80:80
     volumes:
       - './app:/var/www/html'
       - './docker/nginx/conf.d:/etc/nginx/conf.d'
-  db_webhook:
-      image: mysql:8.4
-      environment:
-        MYSQL_DATABASE: ${DB_DATABASE}
-        MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      volumes:
-        - mysql_data:/var/lib/mysql
-      container_name: db_webhook
+    depends_on:
+      - php
+    restart: unless-stopped
 
+  # Worker: long-running process that consumes the Redis queue,
+  # runs the provider handlers, applies retry/backoff and feeds the DLQ.
+  # NOTE: the command points at app code that does not exist yet (`app/worker.php`).
+  #       It will start crash-looping until the application is implemented — that is
+  #       expected at the current "setup & specs" stage.
+  worker:
+    container_name: webhook_worker
+    build: './docker/php'
+    working_dir: /var/www/html
+    command: ["php", "worker.php"]
+    volumes:
+      - './app:/var/www/html'
+    environment:
+      DB_HOST: db_webhook
+      DB_DATABASE: ${DB_DATABASE}
+      DB_USERNAME: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - db_webhook
+      - redis
+    restart: unless-stopped
+
+  # MySQL: event log and processing state.
+  db_webhook:
+    container_name: db_webhook
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+
+  # Redis: the queue itself, delayed-retry storage and the dead letter queue.
+  redis:
+    container_name: webhook_redis
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # phpMyAdmin: inspect the event log during development.
   phpmyadmin:
+    container_name: webhook_phpmyadmin
     image: phpmyadmin:5.2.1
     ports:
       - 8000:80
@@ -32,6 +90,8 @@ services:
       PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
     depends_on:
       - db_webhook
+    restart: unless-stopped
 
 volumes:
   mysql_data:
+  redis_data:

@@ -1,0 +1,35 @@
+# Tasks: Webhook Handler
+
+Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to bottom.
+(Implementation is **not** part of the current setup task — this is the plan.)
+
+## Milestone 0: Skeleton & infra
+- [x] T0.1 — `composer.json`, PSR-4 (`App\` → `app/src/`), `app/public/index.php` front controller · S ✅ done 2026-06-04 (review: `.claude/reviews/T0.1-2026-06-04.md`, ADR: `0002`, note: `.claude/learning/T0.1-skeleton.md`)
+- [ ] T0.2 — Config loader reading env (DB, Redis, provider secrets) · S
+- [ ] T0.3 — DB connection (PDO) + migration runner; `webhook_events` migration · M · depends: T0.2
+- [ ] T0.4 — Redis client wrapper (`Queue`) · S · depends: T0.2
+
+## Milestone 1: Ingestion + signatures
+- [ ] T1.1 — `ProviderVerifier` interface · S
+- [ ] T1.2 — GitHub verifier (HMAC-SHA256, `hash_equals`) · M · depends: T1.1
+- [ ] T1.3 — Stripe verifier (`t`+`v1`, tolerance) · M · depends: T1.1
+- [ ] T1.4 — PayPal verifier (verify-webhook-signature API) · L · depends: T1.1
+- [ ] T1.5 — `IngestionController` (raw body → verify → dedupe → insert → enqueue → 202) · M · depends: T0.3,T0.4,T1.2
+- [ ] T1.6 — Routing `/webhooks/{provider}` + method/`401`/`400` handling · S · depends: T1.5
+
+## Milestone 2: Worker, retry, DLQ
+- [ ] T2.1 — `HandlerRegistry` + stub per-provider handlers · S
+- [ ] T2.2 — `worker.php` loop (`BLPOP` → process → status updates) · M · depends: T0.4,T2.1
+- [ ] T2.3 — Exponential backoff + retry scheduler (zset) · M · depends: T2.2
+- [ ] T2.4 — DLQ on exhaustion + `last_error` persisted · S · depends: T2.3
+- [ ] T2.5 — Graceful shutdown (SIGTERM) · S · depends: T2.2
+
+## Milestone 3: Dashboard & polish
+- [ ] T3.1 — Dashboard: counts by status, recent failures, DLQ size · M · depends: T0.3
+- [ ] T3.2 — DLQ re-queue path (CLI or button) · S · depends: T2.4
+- [ ] T3.3 — Tests for verifiers + retry logic · M
+
+## Definition of done
+- [ ] All spec acceptance criteria (AC-1..AC-6) pass
+- [ ] Conventions pass (psalm/phpcs if configured)
+- [ ] Reviewed by `code-reviewer`; learning note written by `learning-mentor`

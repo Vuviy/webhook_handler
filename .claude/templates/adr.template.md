@@ -1,0 +1,23 @@
+# NNNN. <decision title>
+
+- **Status:** Proposed | Accepted | Superseded by ADR-XXXX
+- **Date:** <YYYY-MM-DD>
+
+## Context
+The forces at play: requirements, constraints, what makes this non-trivial.
+
+## Options considered
+### Option A — <name>
+- Pros: ...
+- Cons: ...
+
+### Option B — <name>
+- Pros: ...
+- Cons: ...
+
+## Decision
+We chose **<option>** because ...
+
+## Consequences
+- Positive: ...
+- Negative / debt: ...
