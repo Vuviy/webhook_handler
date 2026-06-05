@@ -11,7 +11,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 
 ## Milestone 1: Ingestion + signatures
 - [x] T1.1 — `ProviderVerifier` interface · S ✅ done 2026-06-05 (review: `.claude/reviews/T1.1-2026-06-05.md`, ADR: `0006`, note: `.claude/learning/T1.1-provider-verifier.md`)
-- [ ] T1.2 — GitHub verifier (HMAC-SHA256, `hash_equals`) · M · depends: T1.1
+- [x] T1.2 — GitHub verifier (HMAC-SHA256, `hash_equals`) · M · depends: T1.1 ✅ done 2026-06-05 (review: `.claude/reviews/T1.2-2026-06-05.md`, ADR: none — direct application of T1.1, note: `.claude/learning/T1.2-github-verifier.md`)
 - [ ] T1.3 — Stripe verifier (`t`+`v1`, tolerance) · M · depends: T1.1
 - [ ] T1.4 — PayPal verifier (verify-webhook-signature API) · L · depends: T1.1
 - [ ] T1.5 — `IngestionController` (raw body → verify → dedupe → insert → enqueue → 202) · M · depends: T0.3,T0.4,T1.2
