@@ -10,7 +10,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 - [x] T0.4 — Redis client wrapper (`Queue`) · S · depends: T0.2 ✅ done 2026-06-04 (review: `.claude/reviews/T0.4-2026-06-04.md`, ADR: `0005`, note: `.claude/learning/T0.4-queue.md`)
 
 ## Milestone 1: Ingestion + signatures
-- [ ] T1.1 — `ProviderVerifier` interface · S
+- [x] T1.1 — `ProviderVerifier` interface · S ✅ done 2026-06-05 (review: `.claude/reviews/T1.1-2026-06-05.md`, ADR: `0006`, note: `.claude/learning/T1.1-provider-verifier.md`)
 - [ ] T1.2 — GitHub verifier (HMAC-SHA256, `hash_equals`) · M · depends: T1.1
 - [ ] T1.3 — Stripe verifier (`t`+`v1`, tolerance) · M · depends: T1.1
 - [ ] T1.4 — PayPal verifier (verify-webhook-signature API) · L · depends: T1.1
