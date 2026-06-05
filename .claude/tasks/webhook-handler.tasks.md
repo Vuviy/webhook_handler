@@ -14,7 +14,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 - [x] T1.2 — GitHub verifier (HMAC-SHA256, `hash_equals`) · M · depends: T1.1 ✅ done 2026-06-05 (review: `.claude/reviews/T1.2-2026-06-05.md`, ADR: none — direct application of T1.1, note: `.claude/learning/T1.2-github-verifier.md`)
 - [x] T1.3 — Stripe verifier (`t`+`v1`, tolerance) · M · depends: T1.1 ✅ done 2026-06-05 (review: `.claude/reviews/T1.3-2026-06-05.md`, ADR: `0007`, note: `.claude/learning/T1.3-stripe-verifier.md`)
 - [x] T1.4 — PayPal verifier (verify-webhook-signature API) · L · depends: T1.1 ✅ done 2026-06-05 (review: `.claude/reviews/T1.4-2026-06-05.md`, ADR: `0008`, note: `.claude/learning/T1.4-paypal-verifier.md`)
-- [ ] T1.5 — `IngestionController` (raw body → verify → dedupe → insert → enqueue → 202) · M · depends: T0.3,T0.4,T1.2
+- [x] T1.5 — `IngestionController` (raw body → verify → dedupe → insert → enqueue → 202) · M · depends: T0.3,T0.4,T1.2 ✅ done 2026-06-05 (review: `.claude/reviews/T1.5-2026-06-05.md`, ADR: `0009`, note: `.claude/learning/T1.5-ingestion-controller.md`)
 - [ ] T1.6 — Routing `/webhooks/{provider}` + method/`401`/`400` handling · S · depends: T1.5
 
 ## Milestone 2: Worker, retry, DLQ
