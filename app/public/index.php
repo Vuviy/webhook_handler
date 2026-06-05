@@ -20,6 +20,10 @@ use App\Health;
 /** @var Config $config */
 $config = require __DIR__ . '/../bootstrap.php';
 
+//to prevent double request
+if ($_SERVER['REQUEST_URI'] === '/favicon.ico') {
+    return;
+}
 $health = new Health();
 
 http_response_code(200);
