@@ -25,4 +25,16 @@ final class VerificationException extends RuntimeException
             sprintf('Webhook secret for provider "%s" is not configured.', $provider),
         );
     }
+
+    /**
+     * A named required configuration key is absent. Names the env key (e.g.
+     * PAYPAL_CLIENT_ID) but NEVER its value, for clearer 500-time diagnostics when a
+     * provider needs more than a single secret (PayPal: webhook id + credentials).
+     */
+    public static function missingConfig(string $provider, string $key): self
+    {
+        return new self(
+            sprintf('Required configuration "%s" for provider "%s" is not set.', $key, $provider),
+        );
+    }
 }
