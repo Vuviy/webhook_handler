@@ -31,8 +31,8 @@ final class RetryScheduler
     /**
      * Total number of delivery attempts allowed before a job is exhausted (FR-7,
      * "max 3 attempts"). attempt 1 is the initial delivery; attempts 2 and 3 are the
-     * retries; a would-be attempt 4 is exhausted and handed to the interim markFailed
-     * (the T2.4 DLQ seam).
+     * retries; a would-be attempt 4 is exhausted and handed to deadLetter() (mark 'failed'
+     * + push to webhooks:dlq).
      */
     private const MAX_ATTEMPTS = 3;
 
@@ -61,22 +61,47 @@ final class RetryScheduler
      * envelope for a delayed retry. The DB write comes FIRST so that if the zset write fails the
      * row is left at the recoverable 'received' rather than stranded mid-transition.
      *
-     * On EXHAUSTION (next > MAX_ATTEMPTS): interim markFailed — an honest, audited terminal
-     * 'failed' with the error. This is the documented T2.4 seam: T2.4 reroutes this branch to
-     * webhooks:dlq by addition, not rewrite (ADR 0013, Decision 5).
+     * On EXHAUSTION (next > MAX_ATTEMPTS): hand the job to deadLetter() — mark the row
+     * terminally 'failed' with last_error AND push the envelope to webhooks:dlq (T2.4, closing
+     * the seam ADR 0013, Decision 5 reserved here, by addition not rewrite).
      */
     public function retryOrFail(EventRepository $events, int $id, Job $job, string $error): void
     {
         $next = $job->attempt() + 1;
 
         if ($next > self::MAX_ATTEMPTS) {
-            $events->markFailed($id, $error);
+            $this->deadLetter($events, $id, $job, $error);
 
             return;
         }
 
         $events->markForRetry($id, $next, $error);
         $this->queue->scheduleRetry($job->eventId(), $job->provider(), $next, time() + $this->delayFor($next));
+    }
+
+    /**
+     * The terminal-failure boundary (T2.4), kept in ONE place so the worker's permanent-error
+     * catch block and retryOrFail's exhaustion branch stay identical — mirroring how
+     * retryOrFail itself consolidated the two transient branches (ADR 0014).
+     *
+     * Two steps, in this order: mark the DB row 'failed' with last_error FIRST, THEN RPUSH the
+     * envelope to webhooks:dlq. The DB write comes first on purpose (same rule as retryOrFail's
+     * retry path). These two writes are not in one transaction, so a crash between them is
+     * possible; of the two partial states, a row left at terminal 'failed' WITHOUT a DLQ entry
+     * is the recoverable one (it is visible on the dashboard via status, and the T3.2 drain can
+     * reconcile from status='failed'). The reverse order would risk a DLQ entry whose row is
+     * stuck in 'processing' — and because markProcessing() is guarded `AND status='received'`,
+     * such a row can never be re-claimed, an invisible orphan. The audit row is the source of
+     * truth (NFR-4), so it wins (ADR 0014, Decision 2).
+     *
+     * The DLQ envelope carries job->attempt() — the last attempt that ran — so the dead-letter
+     * entry stays coherent with the DB attempts column. The handler is NOT re-run: dead-lettering
+     * is a pure bookkeeping move off the live path.
+     */
+    public function deadLetter(EventRepository $events, int $id, Job $job, string $error): void
+    {
+        $events->markFailed($id, $error);
+        $this->queue->deadLetter($job->eventId(), $job->provider(), $job->attempt());
     }
 
     /**

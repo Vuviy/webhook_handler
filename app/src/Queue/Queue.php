@@ -20,9 +20,10 @@ use RedisException;
  * though single-implementation passthrough wrappers are discouraged.
  *
  * Scope (T0.4): connect + enqueue + read the queue length. T2.2 added the consume
- * side (BLPOP → typed Job). T2.3 adds the delayed-retry sorted set mechanism
- * (scheduleRetry + promoteDueRetries). The dead-letter list (T2.4) belongs to the next
- * worker task and is deliberately not here yet.
+ * side (BLPOP → typed Job). T2.3 added the delayed-retry sorted set mechanism
+ * (scheduleRetry + promoteDueRetries). T2.4 adds the dead-letter list mechanism
+ * (deadLetter) for jobs that exhausted their retries or failed permanently; draining /
+ * re-queuing the DLQ is T3.2 and is deliberately not here yet.
  *
  * The heavy webhook payload stays in MySQL (webhook_events); a job is only a
  * small reference by event id, so the worker re-reads the source of record.
@@ -38,6 +39,15 @@ final class Queue
      * the backoff deadline; the BACKOFF POLICY that computes it lives in RetryScheduler.
      */
     private const RETRY = 'webhooks:retry';
+
+    /**
+     * Dead-letter list (T2.4): RPUSH a job here once it has exhausted its 3 attempts or
+     * failed permanently. Unlike RETRY, nothing in the worker ever moves a job back out of
+     * here automatically — the DLQ is terminal storage for human/operator attention, and the
+     * drain / re-queue path is T3.2. The DECISION to dead-letter (exhaustion vs permanent)
+     * lives in RetryScheduler; Queue only owns the key name and the RPUSH mechanism.
+     */
+    private const DLQ = 'webhooks:dlq';
 
     /** Fail fast instead of hanging PHP-FPM if Redis is unreachable. */
     private const CONNECT_TIMEOUT_SECONDS = 1.5;
@@ -181,6 +191,34 @@ final class Queue
         }
 
         return $promoted;
+    }
+
+    /**
+     * Move a job to the dead-letter list (T2.4): RPUSH the re-encoded envelope onto
+     * webhooks:dlq. Called once a job has exhausted its retries or failed permanently — the
+     * retry-or-DLQ DECISION belongs to RetryScheduler (which also marks the DB row 'failed'
+     * with last_error first); Queue only owns the key name and the write, exactly as it does
+     * for enqueue() and scheduleRetry().
+     *
+     * A plain RPUSH with no read-modify-write: the single worker is the only writer, and the
+     * DLQ is terminal (nothing pops it automatically — draining is T3.2), so there is no race
+     * to guard. The envelope stays the SAME tiny {event_id, provider, attempt} reference; the
+     * human-readable error and timestamps already live on the webhook_events row, so the T3.2
+     * drain re-reads the row rather than carrying a fat payload through Redis. $attempt is the
+     * last attempt that ran (MAX_ATTEMPTS on exhaustion, the throwing attempt on a permanent
+     * error), so the DLQ entry stays coherent with the DB attempts column.
+     *
+     * rPush returns the new list length, or false on failure — and a job that silently fails
+     * to reach the DLQ is a job lost from the audit/recovery path, so false is a hard, loud
+     * error, mirroring enqueue() and scheduleRetry().
+     */
+    public function deadLetter(string $eventId, string $provider, int $attempt): void
+    {
+        $length = $this->redis->rPush(self::DLQ, $this->encodeJob($eventId, $provider, $attempt));
+
+        if ($length === false) {
+            throw QueueException::deadLetterFailed($eventId);
+        }
     }
 
     /**

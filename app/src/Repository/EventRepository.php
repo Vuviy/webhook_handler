@@ -169,12 +169,12 @@ final class EventRepository
      * NFR-4: every failure is visible to the dashboard).
      *
      * As of T2.3, a transient fault no longer lands here while attempts remain — it is
-     * rerouted to markForRetry()/scheduleRetry(). Only two cases still reach markFailed:
-     * a PERMANENT error, and a transient one whose attempts are EXHAUSTED. Both are INTERIM
-     * (ADR 0013, Decision 5): the DLQ list (T2.4) does not exist yet, so the event is marked
-     * terminally 'failed' with last_error — honest, audited, visible to the dashboard — but
-     * not yet pushed to webhooks:dlq. T2.4 reroutes these two call sites to the DLQ by
-     * addition, not by rewriting this method.
+     * rerouted to markForRetry()/scheduleRetry(). Only two cases reach markFailed: a PERMANENT
+     * error, and a transient one whose attempts are EXHAUSTED. As of T2.4 both call sites go
+     * through RetryScheduler::deadLetter(), which calls THIS method FIRST (marking the row
+     * terminally 'failed' with last_error) and then pushes the envelope to webhooks:dlq — so
+     * markFailed is the DB half of a terminal pair, not interim debt. The DB-first ordering
+     * means a 'failed' row is always recorded even if the DLQ push later fails (ADR 0014).
      */
     public function markFailed(int $id, string $error): void
     {

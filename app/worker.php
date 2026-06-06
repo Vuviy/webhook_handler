@@ -19,16 +19,17 @@ declare(strict_types=1);
  * Lives at the app root (above public/), so it is never reachable over HTTP — the worker
  * is an operator-run process, not a request.
  *
- * SCOPE (as of T2.3) and DOCUMENTED DEBT: the retry seam is now FILLED. A transient handler
- * failure (TransientHandlerException or any other Throwable) is routed through
+ * SCOPE (as of T2.4) and REMAINING DEBT: both failure seams are now FILLED. A transient
+ * handler failure (TransientHandlerException or any other Throwable) is routed through
  * RetryScheduler::retryOrFail — while attempts remain it is scheduled on the webhooks:retry
  * zset with exponential, jittered backoff and the row goes back to 'received'; promoteDue()
- * at the top of the loop moves due retries back onto the main queue (ADR 0013). Still DEBT
- * (ADR 0013, Decision 5): there is no dead-letter queue (T2.4) yet, so a PERMANENT error and
- * an EXHAUSTED transient one are still marked terminally 'failed' with last_error — honest,
- * logged and audited, but not yet pushed to webhooks:dlq. The permanent catch block and the
- * exhaustion fall-through inside retryOrFail are the exact seams T2.4 will reroute to the DLQ.
- * Graceful SIGTERM shutdown is T2.5 — its natural home is the `$job === null` idle tick.
+ * at the top of the loop moves due retries back onto the main queue (ADR 0013). A PERMANENT
+ * error, and a transient one whose attempts are EXHAUSTED, now go to RetryScheduler::deadLetter
+ * — the row is marked terminally 'failed' with last_error AND the envelope is pushed to
+ * webhooks:dlq (ADR 0014). Remaining DEBT: graceful SIGTERM shutdown (T2.5) — its natural home
+ * is the `$job === null` idle tick — and the DLQ drain / re-queue path (T3.2). The pre-existing
+ * stuck-'processing' reaper (a row orphaned by an infra fault on a status write) is still
+ * future work, unchanged by T2.4.
  *
  * Resilience: connections are built ONCE before the loop, so a startup outage fails fast
  * at boot (like bin/migrate.php). Inside the loop, an INFRA fault (Redis BLPOP throws, or
@@ -111,8 +112,10 @@ while (true) {
         if ($handler === null) {
             // A job for a provider we have no handler for cannot succeed by retrying — it is
             // a permanent fault. (Ingestion only enqueues known providers, so this is a
-            // defensive guard, not an expected path.)
-            $events->markFailed($row['id'], sprintf('no handler for provider "%s"', $job->provider()));
+            // defensive guard, not an expected path.) Route it through the SAME terminal path
+            // as a PermanentHandlerException (T2.4): mark 'failed' with last_error AND push to
+            // webhooks:dlq, so every terminal failure is uniformly dead-lettered (ADR 0014).
+            $scheduler->deadLetter($events, $row['id'], $job, sprintf('no handler for provider "%s"', $job->provider()));
             continue;
         }
 
@@ -124,8 +127,8 @@ while (true) {
             $job->attempt(),
         );
 
-        // ONLY the handler call is wrapped: a throw here is a HANDLER failure, mapped to
-        // markFailed. The markProcessed write is deliberately OUTSIDE this try — if it
+        // ONLY the handler call is wrapped: a throw here is a HANDLER failure, routed to retry
+        // (transient) or the DLQ (permanent). The markProcessed write is deliberately OUTSIDE this try — if it
         // failed it would be an INFRA fault, and catching it here would wrongly record a
         // successfully-handled event as 'failed' (corrupting the audit trail and, since the
         // job is gone from the queue, never reaching 'processed'). An infra failure of the
@@ -135,13 +138,15 @@ while (true) {
             $handler->handle($event);
         } catch (TransientHandlerException $e) {
             // T2.3: while attempts remain, schedule a retry with exponential backoff (mark the
-            // row back to 'received', ZADD the envelope to webhooks:retry); on exhaustion, fall
-            // through to interim markFailed — the T2.4 DLQ seam (ADR 0013, Decision 5).
+            // row back to 'received', ZADD the envelope to webhooks:retry); on exhaustion,
+            // retryOrFail hands the job to deadLetter (mark 'failed' + webhooks:dlq, T2.4).
             $scheduler->retryOrFail($events, $row['id'], $job, $e->getMessage());
             continue;
         } catch (PermanentHandlerException $e) {
-            // SEAM for T2.4: straight to webhooks:dlq, no retry. Interim: marked 'failed'.
-            $events->markFailed($row['id'], $e->getMessage());
+            // T2.4: a permanent error cannot succeed by retrying — straight to the DLQ, no
+            // retry. deadLetter() marks the row terminally 'failed' with last_error AND pushes
+            // the envelope to webhooks:dlq (same terminal path as an exhausted transient).
+            $scheduler->deadLetter($events, $row['id'], $job, $e->getMessage());
             continue;
         } catch (\Throwable $e) {
             // Any OTHER Throwable from the handler is treated as transient (ADR 0011): an

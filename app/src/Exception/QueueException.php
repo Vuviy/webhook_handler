@@ -52,6 +52,15 @@ final class QueueException extends RuntimeException
         );
     }
 
+    public static function deadLetterFailed(string $eventId, ?Throwable $previous = null): self
+    {
+        return new self(
+            sprintf('Failed to dead-letter the job for event "%s".', $eventId),
+            0,
+            $previous,
+        );
+    }
+
     /**
      * A job popped off the queue could not be decoded — invalid JSON or a malformed
      * envelope (missing/wrong-typed fields). The message is intentionally generic: the
