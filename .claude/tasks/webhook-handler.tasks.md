@@ -27,7 +27,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 ## Milestone 3: Dashboard & polish
 - [x] T3.1 — Dashboard: counts by status, recent failures, DLQ size · M · depends: T0.3 ✅ done 2026-06-06 (review: `.claude/reviews/T3.1-2026-06-06.md`, ADR: `0016`, note: `.claude/learning/T3.1-dashboard.md`)
 - [x] T3.2 — DLQ re-queue path (CLI or button) · S · depends: T2.4 ✅ done 2026-06-06 (review: `.claude/reviews/T3.2-2026-06-06.md`, ADR: `0017`, note: `.claude/learning/T3.2-dlq-requeue.md`)
-- [ ] T3.3 — Tests for verifiers + retry logic · M
+- [x] T3.3 — Tests for verifiers + retry logic · M ✅ done 2026-06-06 (review: `.claude/reviews/T3.3-2026-06-06.md`, ADR: `0018`, spec: `.claude/specs/webhook-handler-tests.spec.md`, note: `.claude/learning/T3.3-tests.md`)
 
 ## Definition of done
 - [ ] All spec acceptance criteria (AC-1..AC-6) pass

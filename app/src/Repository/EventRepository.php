@@ -14,7 +14,7 @@ use PDO;
  * race two concurrent identical re-deliveries (both SELECT "absent", both INSERT). We
  * lean on UNIQUE(provider, event_id) and a single atomic statement instead.
  */
-final class EventRepository
+final class EventRepository implements EventWriter
 {
     public function __construct(
         private readonly PDO $pdo,

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Queue;
 
-use App\Repository\EventRepository;
+use App\Repository\EventWriter;
 
 /**
  * The retry POLICY for transiently-failed jobs (T2.3): how long to wait before the next
@@ -37,7 +37,7 @@ final class RetryScheduler
     private const MAX_ATTEMPTS = 3;
 
     public function __construct(
-        private readonly Queue $queue,
+        private readonly RetryQueue $queue,
     ) {
     }
 
@@ -65,7 +65,7 @@ final class RetryScheduler
      * terminally 'failed' with last_error AND push the envelope to webhooks:dlq (T2.4, closing
      * the seam ADR 0013, Decision 5 reserved here, by addition not rewrite).
      */
-    public function retryOrFail(EventRepository $events, int $id, Job $job, string $error): void
+    public function retryOrFail(EventWriter $events, int $id, Job $job, string $error): void
     {
         $next = $job->attempt() + 1;
 
@@ -98,7 +98,7 @@ final class RetryScheduler
      * entry stays coherent with the DB attempts column. The handler is NOT re-run: dead-lettering
      * is a pure bookkeeping move off the live path.
      */
-    public function deadLetter(EventRepository $events, int $id, Job $job, string $error): void
+    public function deadLetter(EventWriter $events, int $id, Job $job, string $error): void
     {
         $events->markFailed($id, $error);
         $this->queue->deadLetter($job->eventId(), $job->provider(), $job->attempt());

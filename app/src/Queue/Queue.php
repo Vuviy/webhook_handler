@@ -29,7 +29,7 @@ use RedisException;
  * The heavy webhook payload stays in MySQL (webhook_events); a job is only a
  * small reference by event id, so the worker re-reads the source of record.
  */
-final class Queue
+final class Queue implements RetryQueue
 {
     /** Main work queue: RPUSH to add (enqueue), BLPOP to consume (consume). */
     private const QUEUE = 'webhooks:queue';

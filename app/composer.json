@@ -17,10 +17,16 @@
       "App\\": "src/"
     }
   },
+  "autoload-dev": {
+    "psr-4": {
+      "App\\Tests\\": "tests/"
+    }
+  },
 
   "require-dev": {
     "phpstan/phpstan": "^2.1",
     "vimeo/psalm": "^6.15",
-    "squizlabs/php_codesniffer": "^4.0"
+    "squizlabs/php_codesniffer": "^4.0",
+    "phpunit/phpunit": "^12"
   }
 }
