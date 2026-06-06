@@ -18,7 +18,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 - [x] T1.6 — Routing `/webhooks/{provider}` + method/`401`/`400` handling · S · depends: T1.5 ✅ done 2026-06-05 (review: `.claude/reviews/T1.6-2026-06-05.md`, ADR: `0010`, note: `.claude/learning/T1.6-routing.md`)
 
 ## Milestone 2: Worker, retry, DLQ
-- [ ] T2.1 — `HandlerRegistry` + stub per-provider handlers · S
+- [x] T2.1 — `HandlerRegistry` + stub per-provider handlers · S ✅ done 2026-06-06 (review: `.claude/reviews/T2.1-2026-06-06.md`, ADR: `0011`, note: `.claude/learning/T2.1-handler-registry.md`)
 - [ ] T2.2 — `worker.php` loop (`BLPOP` → process → status updates) · M · depends: T0.4,T2.1
 - [ ] T2.3 — Exponential backoff + retry scheduler (zset) · M · depends: T2.2
 - [ ] T2.4 — DLQ on exhaustion + `last_error` persisted · S · depends: T2.3
