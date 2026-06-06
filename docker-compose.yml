@@ -44,6 +44,12 @@ services:
     build: './docker/php'
     working_dir: /var/www/html
     command: ["php", "worker.php"]
+    # The php-fpm base image sets STOPSIGNAL=SIGQUIT; override it so `docker compose stop`/`down`
+    # sends the SIGTERM the worker handles (T2.5 graceful shutdown), instead of an unhandled
+    # SIGQUIT that would be SIGKILLed after the grace period. Default 10s grace is ample: the
+    # worker finishes its in-flight job (sub-second for the stub handlers) and exits within one
+    # BLPOP timeout (5s).
+    stop_signal: SIGTERM
     volumes:
       - './app:/var/www/html'
     environment:

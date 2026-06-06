@@ -26,10 +26,11 @@ declare(strict_types=1);
  * at the top of the loop moves due retries back onto the main queue (ADR 0013). A PERMANENT
  * error, and a transient one whose attempts are EXHAUSTED, now go to RetryScheduler::deadLetter
  * — the row is marked terminally 'failed' with last_error AND the envelope is pushed to
- * webhooks:dlq (ADR 0014). Remaining DEBT: graceful SIGTERM shutdown (T2.5) — its natural home
- * is the `$job === null` idle tick — and the DLQ drain / re-queue path (T3.2). The pre-existing
- * stuck-'processing' reaper (a row orphaned by an infra fault on a status write) is still
- * future work, unchanged by T2.4.
+ * webhooks:dlq (ADR 0014). Graceful SIGTERM/SIGINT shutdown is now wired (T2.5, ADR 0015): a
+ * flag-only signal handler lets the in-flight job finish, then the loop exits 0 instead of
+ * being SIGKILLed mid-handler. Remaining DEBT: the DLQ drain / re-queue path (T3.2). The
+ * pre-existing stuck-'processing' reaper (a row orphaned by an infra fault on a status write)
+ * is still future work.
  *
  * Resilience: connections are built ONCE before the loop, so a startup outage fails fast
  * at boot (like bin/migrate.php). Inside the loop, an INFRA fault (Redis BLPOP throws, or
@@ -50,8 +51,11 @@ use App\Queue\RetryScheduler;
 use App\Repository\EventRepository;
 
 /**
- * BLPOP block time. The loop wakes at least this often even when idle, giving T2.5 a place
- * to check a shutdown flag and the loop a chance to notice a dropped connection.
+ * BLPOP block time. The loop wakes at least this often even when idle, giving the loop a
+ * chance to notice a dropped connection. It also BOUNDS the worst-case graceful-shutdown
+ * latency: phpredis does not abort BLPOP when a signal arrives mid-call, so a stop requested
+ * during an idle block is acted on when BLPOP next returns — i.e. within this many seconds,
+ * comfortably inside the container stop-grace window.
  */
 const BLPOP_TIMEOUT_SECONDS = 5;
 
@@ -72,9 +76,34 @@ $events = new EventRepository(Connection::fromConfig($config->database()));
 $registry = new HandlerRegistry();
 $scheduler = new RetryScheduler($queue);
 
+// T2.5 graceful shutdown (ADR 0015). The signal handler does ONE thing — set a flag — so the
+// in-flight iteration finishes naturally before the loop exits; it never throws or exits from
+// within the handler, which would abandon a half-processed job. pcntl_async_signals(true) lets
+// the handler run as soon as PHP regains control; phpredis does NOT abort BLPOP on the
+// interrupt, so the flag is honoured when BLPOP next returns (≤ BLPOP_TIMEOUT_SECONDS) — still
+// well inside the stop-grace window.
+//
+// We listen on THREE signals: SIGTERM (what we pin the worker service to stop with), SIGINT
+// (local Ctrl-C), and SIGQUIT. SIGQUIT matters specifically here: the php-fpm base image sets
+// STOPSIGNAL=SIGQUIT (the graceful signal for php-fpm itself), which this worker image
+// inherits — so `docker stop` on the raw image would deliver SIGQUIT. Handling it too means
+// the worker winds down cleanly no matter which of those a stop arrives as, rather than being
+// SIGKILLed after the grace period. (docker-compose.yml also pins stop_signal: SIGTERM.)
+$shouldStop = false;
+pcntl_async_signals(true);
+$onSignal = static function (int $signal) use (&$shouldStop): void {
+    $shouldStop = true;
+};
+pcntl_signal(SIGTERM, $onSignal);
+pcntl_signal(SIGINT, $onSignal);
+pcntl_signal(SIGQUIT, $onSignal);
+
 fwrite(STDOUT, "worker: started, waiting for jobs on webhooks:queue\n");
 
-while (true) {
+// `while (!$shouldStop)` is the load-bearing exit: a signal that arrives mid-job sets the flag,
+// the current iteration runs to completion (handler + status write), then the condition is
+// re-checked before the next job is ever claimed — so we never abandon work in flight.
+while (!$shouldStop) {
     try {
         // T2.3: move any now-due retries from webhooks:retry back onto the main queue before
         // blocking, so a scheduled retry is re-popped within one loop turn (ADR 0013, D1).
@@ -83,7 +112,8 @@ while (true) {
         $job = $queue->consume(BLPOP_TIMEOUT_SECONDS);
 
         if ($job === null) {
-            // Idle tick: no job within the timeout. T2.5's graceful-shutdown check lands here.
+            // Idle tick: no job within the timeout (or BLPOP was interrupted by a signal). Loop
+            // back so the `while (!$shouldStop)` condition can exit promptly if a stop was asked.
             continue;
         }
 
@@ -161,6 +191,14 @@ while (true) {
         // mis-recorded as 'failed'.
         $events->markProcessed($row['id']);
     } catch (\Throwable $e) {
+        // A SIGTERM/SIGINT that interrupts a blocking BLPOP surfaces here as an EINTR-driven
+        // RedisException. During a graceful stop that is expected, not a fault: break cleanly
+        // rather than logging it as infra noise and sleeping. We discriminate on the flag, not
+        // on brittle phpredis error-string matching (ADR 0015, D3).
+        if ($shouldStop) {
+            break;
+        }
+
         // Infra fault (Redis BLPOP / a status write failing mid-iteration). Log with the
         // front controller's discipline — full detail to the error log, never leaked
         // onward — then back off briefly so a down dependency does not busy-spin.
@@ -168,3 +206,8 @@ while (true) {
         sleep(INFRA_BACKOFF_SECONDS);
     }
 }
+
+// Reached only via a graceful SIGTERM/SIGINT (the loop has no other exit). The in-flight job,
+// if any, has already finished; exit 0 so Docker records a clean stop rather than SIGKILLing
+// us after the stop-grace period.
+fwrite(STDOUT, "worker: shutdown signal received, exiting cleanly\n");

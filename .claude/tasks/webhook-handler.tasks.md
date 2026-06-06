@@ -22,7 +22,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 - [x] T2.2 — `worker.php` loop (`BLPOP` → process → status updates) · M · depends: T0.4,T2.1 ✅ done 2026-06-06 (review: `.claude/reviews/T2.2-2026-06-06.md`, ADR: `0012`, note: `.claude/learning/T2.2-worker-loop.md`)
 - [x] T2.3 — Exponential backoff + retry scheduler (zset) · M · depends: T2.2 ✅ done 2026-06-06 (review: `.claude/reviews/T2.3-2026-06-06.md`, ADR: `0013`, note: `.claude/learning/T2.3-retry-scheduler.md`)
 - [x] T2.4 — DLQ on exhaustion + `last_error` persisted · S · depends: T2.3 ✅ done 2026-06-06 (review: `.claude/reviews/T2.4-2026-06-06.md`, ADR: `0014`, note: `.claude/learning/T2.4-dlq.md`)
-- [ ] T2.5 — Graceful shutdown (SIGTERM) · S · depends: T2.2
+- [x] T2.5 — Graceful shutdown (SIGTERM) · S · depends: T2.2 ✅ done 2026-06-06 (review: `.claude/reviews/T2.5-2026-06-06.md`, ADR: `0015`, note: `.claude/learning/T2.5-graceful-shutdown.md`)
 
 ## Milestone 3: Dashboard & polish
 - [ ] T3.1 — Dashboard: counts by status, recent failures, DLQ size · M · depends: T0.3
