@@ -19,7 +19,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 
 ## Milestone 2: Worker, retry, DLQ
 - [x] T2.1 — `HandlerRegistry` + stub per-provider handlers · S ✅ done 2026-06-06 (review: `.claude/reviews/T2.1-2026-06-06.md`, ADR: `0011`, note: `.claude/learning/T2.1-handler-registry.md`)
-- [ ] T2.2 — `worker.php` loop (`BLPOP` → process → status updates) · M · depends: T0.4,T2.1
+- [x] T2.2 — `worker.php` loop (`BLPOP` → process → status updates) · M · depends: T0.4,T2.1 ✅ done 2026-06-06 (review: `.claude/reviews/T2.2-2026-06-06.md`, ADR: `0012`, note: `.claude/learning/T2.2-worker-loop.md`)
 - [ ] T2.3 — Exponential backoff + retry scheduler (zset) · M · depends: T2.2
 - [ ] T2.4 — DLQ on exhaustion + `last_error` persisted · S · depends: T2.3
 - [ ] T2.5 — Graceful shutdown (SIGTERM) · S · depends: T2.2

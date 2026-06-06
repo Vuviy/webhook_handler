@@ -63,4 +63,100 @@ final class EventRepository
 
         return $statement->rowCount() === 1;
     }
+
+    /**
+     * Read the persisted row for one event so the worker can build a WebhookEvent and
+     * drive its status. Returns the associative row, or null if no such row exists.
+     *
+     * A null is a real possibility under at-least-once delivery: a job can be popped for
+     * an event whose row was never written or has since gone — the worker treats that as
+     * "nothing to do" and skips, rather than crashing (ADR 0012, Decision 3). Keyed by the
+     * (provider, event_id) UNIQUE so it reads exactly the row ingestion inserted.
+     *
+     * @return array{id: int, event_type: string, payload: string, status: string}|null
+     */
+    public function findForProcessing(string $provider, string $eventId): ?array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id, event_type, payload, status
+             FROM webhook_events
+             WHERE provider = :provider AND event_id = :event_id',
+        );
+        $statement->execute(['provider' => $provider, 'event_id' => $eventId]);
+
+        $row = $statement->fetch();
+
+        if ($row === false) {
+            return null;
+        }
+
+        return [
+            'id' => (int) $row['id'],
+            'event_type' => (string) $row['event_type'],
+            'payload' => (string) $row['payload'],
+            'status' => (string) $row['status'],
+        ];
+    }
+
+    /**
+     * Atomically CLAIM an event for processing: received → processing. Returns true only
+     * if THIS call won the claim (the row was still 'received'), false otherwise.
+     *
+     * The `AND status = 'received'` guard is the worker-level dedupe for at-least-once
+     * delivery (FR-11): if the same job is popped twice, only the first claim matches a
+     * row; the second updates 0 rows, returns false, and the worker skips it without
+     * re-running the handler — no second lookup needed (ADR 0012, Decision 2). It is also
+     * already correct for T2.3's retry, which puts a job back at 'received' before requeue,
+     * so a legitimate retry wins the claim again.
+     *
+     * Only `status` is set: `updated_at` is the column's `ON UPDATE CURRENT_TIMESTAMP`
+     * (migration 0001), so MySQL bumps it automatically whenever the row actually changes.
+     * No explicit `updated_at = NOW()` is needed (it would be redundant).
+     */
+    public function markProcessing(int $id): bool
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE webhook_events
+             SET status = \'processing\'
+             WHERE id = :id AND status = \'received\'',
+        );
+        $statement->execute(['id' => $id]);
+
+        return $statement->rowCount() === 1;
+    }
+
+    /**
+     * Mark a successfully handled event processed and stamp processed_at (NOW()), so the
+     * audit log records WHEN processing completed (FR-9). Terminal happy-path state.
+     */
+    public function markProcessed(int $id): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE webhook_events
+             SET status = \'processed\', processed_at = NOW()
+             WHERE id = :id',
+        );
+        $statement->execute(['id' => $id]);
+    }
+
+    /**
+     * Mark an event failed and persist the human-readable reason in last_error (FR-9,
+     * NFR-4: every failure is visible to the dashboard).
+     *
+     * INTERIM behaviour for T2.2 (ADR 0012, Decision 3): the worker has no retry queue
+     * (T2.3) and no DLQ (T2.4) yet, so EVERY handler failure — transient, permanent or
+     * unforeseen — lands here. That over-commits a transient fault to a terminal 'failed'
+     * for now; it is honest and audited, not silent. T2.3/T2.4 will REPLACE the call sites
+     * (route transient → retry/'received', exhausted/permanent → DLQ), not necessarily
+     * this method.
+     */
+    public function markFailed(int $id, string $error): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE webhook_events
+             SET status = \'failed\', last_error = :error
+             WHERE id = :id',
+        );
+        $statement->execute(['id' => $id, 'error' => $error]);
+    }
 }

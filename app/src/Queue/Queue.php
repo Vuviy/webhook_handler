@@ -19,16 +19,16 @@ use RedisException;
  * the envelope. That added vocabulary is why wrapping is justified here even
  * though single-implementation passthrough wrappers are discouraged.
  *
- * Scope (T0.4): connect + enqueue + read the queue length. Consuming (BLPOP),
- * the delayed-retry sorted set and the dead-letter list belong to the worker
- * tasks (T2.x) and are deliberately not implemented yet.
+ * Scope (T0.4): connect + enqueue + read the queue length. T2.2 adds the consume
+ * side (BLPOP → typed Job). The delayed-retry sorted set (T2.3) and the dead-letter
+ * list (T2.4) belong to the later worker tasks and are deliberately not here yet.
  *
  * The heavy webhook payload stays in MySQL (webhook_events); a job is only a
  * small reference by event id, so the worker re-reads the source of record.
  */
 final class Queue
 {
-    /** Main work queue: RPUSH to add, BLPOP to consume (consume lands in T2.2). */
+    /** Main work queue: RPUSH to add (enqueue), BLPOP to consume (consume). */
     private const QUEUE = 'webhooks:queue';
 
     /** Fail fast instead of hanging PHP-FPM if Redis is unreachable. */
@@ -76,6 +76,35 @@ final class Queue
         }
     }
 
+    /**
+     * Block until a job is available, then pop it off the FRONT of the queue (BLPOP),
+     * giving FIFO order against enqueue()'s RPUSH at the back. Returns the decoded,
+     * typed Job, or null when no job arrived within $timeoutSeconds.
+     *
+     * Why a finite timeout instead of blocking forever (BLPOP … 0): the worker loop
+     * regains control every $timeoutSeconds even when idle, which is the natural place
+     * for graceful shutdown (T2.5) to check its stop flag and for the loop to notice a
+     * dropped connection — at the cost of one cheap empty wakeup per interval. A timeout
+     * of 0 would block indefinitely and surface neither (ADR 0012, Decision 1).
+     *
+     * BLPOP returns [listName, value] on a hit, or an empty array on timeout. A genuine
+     * Redis fault throws RedisException, which we let propagate: the worker's loop-level
+     * backstop logs it and backs off (ADR 0012, Decision 4) — a queue must never silently
+     * swallow a connection drop, exactly as enqueue() never silently drops a job.
+     */
+    public function consume(int $timeoutSeconds): ?Job
+    {
+        $result = $this->redis->blPop([self::QUEUE], $timeoutSeconds);
+
+        // Empty array (or false on some phpredis versions) means the timeout elapsed with
+        // no job — a normal idle tick, not an error. Anything else is [listName, rawJob].
+        if (!is_array($result) || $result === []) {
+            return null;
+        }
+
+        return $this->decodeJob($result[1]);
+    }
+
     /** Current number of jobs waiting in the main queue. */
     public function size(): int
     {
@@ -96,5 +125,38 @@ final class Queue
         } catch (JsonException $e) {
             throw QueueException::encodeFailed($eventId, $e);
         }
+    }
+
+    /**
+     * The mirror of encodeJob(): the ONE place the envelope is read back. Keeping decode
+     * here (where encode lives) means the wire schema stays sealed inside Queue and a
+     * malformed/legacy envelope is rejected in a single spot rather than re-validated by
+     * every caller.
+     *
+     * A job that cannot be decoded — bad JSON, or missing/wrong-typed fields — is a
+     * corrupt queue entry, not a processable event. We raise QueueException rather than
+     * return a half-built Job: the worker's loop backstop logs it and moves on, so one
+     * poison envelope cannot masquerade as a real event. The factory names neither the
+     * raw bytes nor any secret (NFR-1).
+     */
+    private function decodeJob(string $raw): Job
+    {
+        try {
+            /** @var mixed $decoded */
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw QueueException::decodeFailed($e);
+        }
+
+        if (
+            !is_array($decoded)
+            || !is_string($decoded['event_id'] ?? null)
+            || !is_string($decoded['provider'] ?? null)
+            || !is_int($decoded['attempt'] ?? null)
+        ) {
+            throw QueueException::decodeFailed();
+        }
+
+        return new Job($decoded['event_id'], $decoded['provider'], $decoded['attempt']);
     }
 }
