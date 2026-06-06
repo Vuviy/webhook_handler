@@ -187,6 +187,42 @@ final class EventRepository
     }
 
     /**
+     * Re-arm a dead-lettered row so it can be processed again (T3.2): set it BACK to
+     * 'received', reset attempts to 0 and clear last_error. Returns true iff THIS call reset
+     * exactly such a row, false otherwise.
+     *
+     * The `AND status = 'failed'` guard is the safety latch (ADR 0017, Decision 4): only a
+     * genuinely dead-lettered row is ever re-armed. A row that is absent, or already
+     * 'received'/'processing'/'processed' (e.g. a re-run of the drain, or a DLQ envelope whose
+     * row was meanwhile re-driven), matches 0 rows and returns false — a harmless no-op, never a
+     * corruption of a live or completed event. It is the recovery-direction counterpart of
+     * markFailed(): markFailed drives received→failed, this drives failed→received.
+     *
+     * Resetting `attempts = 0` is load-bearing, not cosmetic: the DLQ envelope carried the
+     * exhausted attempt count, so without this the re-queued job would compute next > MAX_ATTEMPTS
+     * and bounce straight back to the DLQ on its first new failure (ADR 0017, Context). Zeroing it
+     * here — paired with the fresh attempt=1 envelope the orchestrator re-enqueues — gives the
+     * replay a full, clean 3-attempt budget and keeps the DB audit mirror coherent with the wire
+     * envelope (the same coherence rule as markForRetry, ADR 0013 D3).
+     *
+     * `last_error` is cleared to NULL so a successfully re-queued event drops off the dashboard's
+     * recent-failures panel (recentFailures() reads status='failed'): once it is back on the live
+     * path it is no longer a current failure. processed_at is left untouched — a re-queue has not
+     * completed; only markProcessed() ever stamps it.
+     */
+    public function requeueFromDlq(string $provider, string $eventId): bool
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE webhook_events
+             SET status = \'received\', attempts = 0, last_error = NULL
+             WHERE provider = :provider AND event_id = :event_id AND status = \'failed\'',
+        );
+        $statement->execute(['provider' => $provider, 'event_id' => $eventId]);
+
+        return $statement->rowCount() === 1;
+    }
+
+    /**
      * Count rows grouped by status, for the monitoring dashboard (FR-10, AC-5). Returns a
      * map keyed by status with EVERY enum value present and defaulted to 0, so a status with
      * no rows yet still reports 0 rather than being absent — a stable JSON contract the

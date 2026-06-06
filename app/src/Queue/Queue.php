@@ -21,9 +21,10 @@ use RedisException;
  *
  * Scope (T0.4): connect + enqueue + read the queue length. T2.2 added the consume
  * side (BLPOP → typed Job). T2.3 added the delayed-retry sorted set mechanism
- * (scheduleRetry + promoteDueRetries). T2.4 adds the dead-letter list mechanism
- * (deadLetter) for jobs that exhausted their retries or failed permanently; draining /
- * re-queuing the DLQ is T3.2 and is deliberately not here yet.
+ * (scheduleRetry + promoteDueRetries). T2.4 added the dead-letter list mechanism
+ * (deadLetter) for jobs that exhausted their retries or failed permanently. T3.2 added
+ * the recovery half (requeueOneFromDeadLetter): LPOP one DLQ envelope back as a typed
+ * Job so the DlqRequeue orchestrator can re-arm its row and re-enqueue it.
  *
  * The heavy webhook payload stays in MySQL (webhook_events); a job is only a
  * small reference by event id, so the worker re-reads the source of record.
@@ -230,6 +231,41 @@ final class Queue
         if ($length === false) {
             throw QueueException::deadLetterFailed($eventId);
         }
+    }
+
+    /**
+     * Take ONE entry off the front of the dead-letter list (LPOP webhooks:dlq) and return it as a
+     * typed Job, or null when the DLQ is empty — the consume-side mirror of deadLetter() and the
+     * recovery half of the DLQ story (T3.2). Like consume()/decodeJob(), the key name and the
+     * envelope schema stay sealed inside Queue: the caller (the DlqRequeue orchestrator) learns
+     * only WHICH event to re-arm, never how the envelope is shaped or where it lives.
+     *
+     * LPOP, not LRANGE: popping one entry at a time makes a drain RESUMABLE — if the operator's CLI
+     * dies mid-run, the rest of the list is untouched and a re-run finishes the job — and avoids the
+     * read-then-delete window a bulk LRANGE+DEL would open (ADR 0017, Decision 3). It pops a single
+     * atomic element, exactly as promoteDueRetries() moves one due member at a time.
+     *
+     * The pop is deliberately the FIRST step of a re-queue (ADR 0017, Decision 3): consuming the
+     * entry up front means a re-run cannot re-queue the same envelope twice, and the worst crash
+     * residue is a popped entry whose row stays the visible 'failed' (reconcilable) — never the
+     * dangerous "live envelope on webhooks:queue pointing at a 'failed' row the worker silently
+     * skips", which the reset-before-push ordering in DlqRequeue makes impossible.
+     *
+     * A genuinely corrupt DLQ envelope (bad JSON / wrong-typed fields) surfaces the same
+     * QueueException::decodeFailed() that consume() would — the drain's loop-level catch logs it as
+     * a skipped poison entry and moves on, rather than aborting the whole run.
+     */
+    public function requeueOneFromDeadLetter(): ?Job
+    {
+        $raw = $this->redis->lPop(self::DLQ);
+
+        // lPop returns false on an empty list (and on a genuine miss); only a string is a real
+        // entry. Anything non-string means "nothing more to drain", so the caller stops.
+        if (!is_string($raw)) {
+            return null;
+        }
+
+        return $this->decodeJob($raw);
     }
 
     /**
