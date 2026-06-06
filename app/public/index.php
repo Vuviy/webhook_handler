@@ -12,8 +12,10 @@ declare(strict_types=1);
  * result, and guarantees no Throwable ever escapes into the response (NFR-1).
  *
  * Routing (path × method):
- *   GET  /                       → 200 health JSON
+ *   GET  /                       → 200 dashboard JSON (DashboardController; opens DB+Redis)
  *   *    /                       → 405 (Allow: GET)
+ *   GET  /health                 → 200 health JSON (opens NO DB/Redis — liveness probe)
+ *   *    /health                 → 405 (Allow: GET)
  *   POST /webhooks/{provider}    → IngestionController → 202 / 401 / 502 / 500 / 404
  *   *    /webhooks/{provider}    → 405 (Allow: POST)
  *   *    /webhooks | /webhooks/  → 400 (malformed: no provider segment)
@@ -23,6 +25,7 @@ declare(strict_types=1);
 use App\Config\Config;
 use App\Database\Connection;
 use App\Health;
+use App\Http\DashboardController;
 use App\Http\IngestionController;
 use App\Http\IngestionResponse;
 use App\Http\ServerRequest;
@@ -76,9 +79,10 @@ if ($body !== null) {
  * the whole dispatch — including the per-request construction of the controller and
  * its DB/Redis connections — sits inside the caller's try/catch backstop.
  *
- * The controller (and its connections) is built ONLY on the matched webhook POST, so
- * health / 400 / 404 / 405 open no MySQL or Redis connection — a Redis outage must not
- * break a health check.
+ * A controller (and its connections) is built ONLY on the matched dashboard GET and the
+ * matched webhook POST, so /health / 400 / 404 / 405 open no MySQL or Redis connection — a
+ * Redis outage must not break the liveness probe (which is why health lives at its own
+ * dependency-free /health route, distinct from the dashboard at /).
  *
  * @return array{0: int, 1: ?string, 2: ?string} [statusCode, body, Allow header or null]
  */
@@ -87,13 +91,32 @@ function dispatch(ServerRequest $request, Config $config): array
     $method = $request->method();
     $path = $request->path();
 
-    // Health endpoint.
-    if ($path === '/') {
+    // Health/liveness probe: deliberately opens NO DB/Redis, so an infra outage never breaks
+    // it. Kept at its own /health path so the root (/) can be the monitoring dashboard.
+    if ($path === '/health') {
         if ($method !== 'GET') {
             return [405, IngestionResponse::rejected(405)->body(), 'GET'];
         }
 
         return [200, json_encode((new Health())->status(), JSON_THROW_ON_ERROR), null];
+    }
+
+    // Monitoring dashboard at the documented root URL (http://localhost/). Unlike /health it
+    // reads MySQL (counts, recent failures) and Redis (DLQ size), so it builds its controller
+    // and connections HERE, inside the matched branch only — never for /health, 404, 405 or
+    // webhook POSTs. Any throw (DB/Redis down, SQL/encode error) propagates to the Throwable
+    // backstop above → clean 500, no leak (NFR-1).
+    if ($path === '/') {
+        if ($method !== 'GET') {
+            return [405, IngestionResponse::rejected(405)->body(), 'GET'];
+        }
+
+        $dashboard = new DashboardController(
+            new EventRepository(Connection::fromConfig($config->database())),
+            Queue::fromConfig($config->redis()),
+        );
+
+        return [200, $dashboard->handle(), null];
     }
 
     // The webhook namespace addressed with no provider → a MALFORMED url (400),

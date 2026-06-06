@@ -130,6 +130,17 @@ final class Queue
     }
 
     /**
+     * Current number of jobs in the dead-letter list, for the monitoring dashboard (T3.1,
+     * FR-10, AC-5). The exact read-only mirror of size(): lLen on the DLQ key, which stays
+     * sealed inside Queue (Constraint: only Queue knows webhooks:dlq). It does NOT pop or
+     * drain anything — draining / re-queuing the DLQ is T3.2.
+     */
+    public function deadLetterSize(): int
+    {
+        return (int) $this->redis->lLen(self::DLQ);
+    }
+
+    /**
      * Schedule a job for a delayed retry: ZADD the re-encoded envelope into the
      * webhooks:retry sorted set, scored by $readyAt (a unix timestamp). promoteDueRetries()
      * moves it back onto the main queue once that time passes.

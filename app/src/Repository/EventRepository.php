@@ -185,4 +185,96 @@ final class EventRepository
         );
         $statement->execute(['id' => $id, 'error' => $error]);
     }
+
+    /**
+     * Count rows grouped by status, for the monitoring dashboard (FR-10, AC-5). Returns a
+     * map keyed by status with EVERY enum value present and defaulted to 0, so a status with
+     * no rows yet still reports 0 rather than being absent — a stable JSON contract the
+     * dashboard (and any future static front) can rely on.
+     *
+     * One grouped query, not four COUNTs nor a fetch-and-count in PHP: the GROUP BY is served
+     * by idx_status (migration 0001), so it scans the index, never the table or the LONGTEXT
+     * payload. The PHP-side normalisation only fills in the zero buckets the query legitimately
+     * omits (a status with no rows produces no group), it does not re-count anything.
+     *
+     * @return array{received: int, processing: int, processed: int, failed: int}
+     */
+    public function countsByStatus(): array
+    {
+        // Pre-seed all four enum buckets to 0 so the shape is complete and ordered even before
+        // the query; the loop below overwrites only the statuses that actually have rows.
+        $counts = ['received' => 0, 'processing' => 0, 'processed' => 0, 'failed' => 0];
+
+        $statement = $this->pdo->query(
+            'SELECT status, COUNT(*) AS total
+             FROM webhook_events
+             GROUP BY status',
+        );
+
+        foreach ($statement as $row) {
+            $status = (string) $row['status'];
+
+            // Guard against an unexpected status value (e.g. a future enum member added by a
+            // later migration but not yet known here): only fill buckets we declared, so a
+            // stray status never injects an unkeyed entry into the stable contract.
+            if (array_key_exists($status, $counts)) {
+                $counts[$status] = (int) $row['total'];
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * The most recently failed events, newest first, for the dashboard's "recent failures"
+     * panel (FR-10, AC-5). Ordered by updated_at DESC because that column is the moment the
+     * row went terminal (it carries ON UPDATE CURRENT_TIMESTAMP — migration 0001 — and
+     * markFailed() deliberately does not set it explicitly), so "most recent failure first"
+     * is exactly the operator's view.
+     *
+     * Column safety (NFR-1): the SELECT list is PINNED to safe metadata only — the raw
+     * `payload` LONGTEXT (the signed request bytes) is NEVER selected, so it cannot leak into
+     * the response even by accident. last_error and attempts ARE included: they are precisely
+     * what "recent failures" exists to show, and last_error is the human reason the worker
+     * already chose to persist for this view (FR-9).
+     *
+     * $limit is bound as PARAM_INT on purpose: the PDO is built with ATTR_EMULATE_PREPARES =>
+     * false (Connection.php), so a *string*-bound LIMIT would be sent quoted and MySQL would
+     * reject it. The caller passes a fixed constant (no user input), but the integer bind keeps
+     * the query correct regardless.
+     *
+     * @return list<array{
+     *     id: int, provider: string, event_type: string, attempts: int,
+     *     last_error: ?string, created_at: string, updated_at: string
+     * }>
+     */
+    public function recentFailures(int $limit): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT id, provider, event_type, attempts, last_error, created_at, updated_at
+             FROM webhook_events
+             WHERE status = \'failed\'
+             ORDER BY updated_at DESC
+             LIMIT :limit',
+        );
+        $statement->bindValue('limit', $limit, PDO::PARAM_INT);
+        $statement->execute();
+
+        $failures = [];
+
+        foreach ($statement as $row) {
+            $failures[] = [
+                'id' => (int) $row['id'],
+                'provider' => (string) $row['provider'],
+                'event_type' => (string) $row['event_type'],
+                'attempts' => (int) $row['attempts'],
+                // last_error is a nullable TEXT column; preserve null rather than coercing to ''.
+                'last_error' => $row['last_error'] === null ? null : (string) $row['last_error'],
+                'created_at' => (string) $row['created_at'],
+                'updated_at' => (string) $row['updated_at'],
+            ];
+        }
+
+        return $failures;
+    }
 }

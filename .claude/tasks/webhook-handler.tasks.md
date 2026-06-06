@@ -25,7 +25,7 @@ Derived from `.claude/specs/webhook-handler.spec.md`. Order matters — top to b
 - [x] T2.5 — Graceful shutdown (SIGTERM) · S · depends: T2.2 ✅ done 2026-06-06 (review: `.claude/reviews/T2.5-2026-06-06.md`, ADR: `0015`, note: `.claude/learning/T2.5-graceful-shutdown.md`)
 
 ## Milestone 3: Dashboard & polish
-- [ ] T3.1 — Dashboard: counts by status, recent failures, DLQ size · M · depends: T0.3
+- [x] T3.1 — Dashboard: counts by status, recent failures, DLQ size · M · depends: T0.3 ✅ done 2026-06-06 (review: `.claude/reviews/T3.1-2026-06-06.md`, ADR: `0016`, note: `.claude/learning/T3.1-dashboard.md`)
 - [ ] T3.2 — DLQ re-queue path (CLI or button) · S · depends: T2.4
 - [ ] T3.3 — Tests for verifiers + retry logic · M
 
