@@ -19,9 +19,10 @@ use RedisException;
  * the envelope. That added vocabulary is why wrapping is justified here even
  * though single-implementation passthrough wrappers are discouraged.
  *
- * Scope (T0.4): connect + enqueue + read the queue length. T2.2 adds the consume
- * side (BLPOP → typed Job). The delayed-retry sorted set (T2.3) and the dead-letter
- * list (T2.4) belong to the later worker tasks and are deliberately not here yet.
+ * Scope (T0.4): connect + enqueue + read the queue length. T2.2 added the consume
+ * side (BLPOP → typed Job). T2.3 adds the delayed-retry sorted set mechanism
+ * (scheduleRetry + promoteDueRetries). The dead-letter list (T2.4) belongs to the next
+ * worker task and is deliberately not here yet.
  *
  * The heavy webhook payload stays in MySQL (webhook_events); a job is only a
  * small reference by event id, so the worker re-reads the source of record.
@@ -30,6 +31,13 @@ final class Queue
 {
     /** Main work queue: RPUSH to add (enqueue), BLPOP to consume (consume). */
     private const QUEUE = 'webhooks:queue';
+
+    /**
+     * Delayed-retry sorted set (T2.3): ZADD a job with score = ready-at unix time,
+     * promoteDueRetries() moves it back to QUEUE once that time has passed. The score is
+     * the backoff deadline; the BACKOFF POLICY that computes it lives in RetryScheduler.
+     */
+    private const RETRY = 'webhooks:retry';
 
     /** Fail fast instead of hanging PHP-FPM if Redis is unreachable. */
     private const CONNECT_TIMEOUT_SECONDS = 1.5;
@@ -109,6 +117,70 @@ final class Queue
     public function size(): int
     {
         return (int) $this->redis->lLen(self::QUEUE);
+    }
+
+    /**
+     * Schedule a job for a delayed retry: ZADD the re-encoded envelope into the
+     * webhooks:retry sorted set, scored by $readyAt (a unix timestamp). promoteDueRetries()
+     * moves it back onto the main queue once that time passes.
+     *
+     * This is the retry-side mirror of enqueue(): the envelope schema stays sealed inside
+     * Queue (reuses encodeJob()) and the key name lives here, not in the caller. The BACKOFF
+     * POLICY — how far ahead $readyAt is, and whether to retry at all — is decided by
+     * RetryScheduler, not here (ADR 0013, Decision 4): Queue owns the MECHANISM (the zset
+     * write), RetryScheduler owns the POLICY (the math, jitter, attempt limit).
+     *
+     * zAdd() returns the count of NEW members added — 0 when an existing member's score is
+     * merely updated (a legitimately re-scheduled same event), or false on a genuine failure.
+     * Only false is an error: a dropped retry breaks at-least-once just as a dropped enqueue
+     * would, so we raise loudly rather than silently lose the job.
+     */
+    public function scheduleRetry(string $eventId, string $provider, int $attempt, int $readyAt): void
+    {
+        $added = $this->redis->zAdd(self::RETRY, $readyAt, $this->encodeJob($eventId, $provider, $attempt));
+
+        if ($added === false) {
+            throw QueueException::scheduleRetryFailed($eventId);
+        }
+    }
+
+    /**
+     * Move every retry whose ready-at score has passed (score <= $now) from webhooks:retry
+     * back onto the main webhooks:queue, so the worker re-pops it. Returns how many were moved.
+     *
+     * Non-atomic by design (ADR 0013, Decision 2): ZRANGEBYSCORE reads the due members, then
+     * each is RPUSH'd and ZREM'd. With a SINGLE worker there is no concurrent sweeper, so the
+     * read-then-remove window cannot double-promote; and even if it ever did (a second worker),
+     * the guarded markProcessing() claim makes a duplicate harmless (the second claim matches 0
+     * rows and is skipped). A multi-worker deployment should harden this to an atomic Lua
+     * ZPOPMIN-style pop — a localized change, not a redesign.
+     *
+     * RPUSH-then-ZREM order is deliberate: if the process dies between the two, the job stays
+     * in the zset and is promoted again next sweep (at-least-once) rather than being lost. We
+     * never ZREM a job we failed to RPUSH, for the same reason.
+     */
+    public function promoteDueRetries(int $now): int
+    {
+        $due = $this->redis->zRangeByScore(self::RETRY, '-inf', (string) $now);
+
+        if (!is_array($due) || $due === []) {
+            return 0;
+        }
+
+        $promoted = 0;
+
+        foreach ($due as $job) {
+            if ($this->redis->rPush(self::QUEUE, $job) === false) {
+                // Leave it in the zset; the next sweep retries the promotion. Never ZREM a job
+                // we failed to move, or it would be lost (breaks at-least-once).
+                continue;
+            }
+
+            $this->redis->zRem(self::RETRY, $job);
+            $promoted++;
+        }
+
+        return $promoted;
     }
 
     /**

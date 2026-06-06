@@ -19,13 +19,15 @@ declare(strict_types=1);
  * Lives at the app root (above public/), so it is never reachable over HTTP — the worker
  * is an operator-run process, not a request.
  *
- * SCOPE (T2.2) and DOCUMENTED DEBT (ADR 0012, Decision 3): there is no retry queue (T2.3)
- * and no dead-letter queue (T2.4) yet. So in this task EVERY handler failure — transient,
- * permanent, or an unforeseen Throwable — is marked terminally 'failed' with last_error.
- * That over-commits a transient fault that T2.3 would later retry; it is honest, logged
- * and audited, not silent. The three handler-failure catch blocks below are the exact
- * seams T2.3/T2.4 will fill: T2.3 reroutes the transient/catch-all branches to "schedule
- * retry / mark received", T2.4 reroutes the permanent (and exhausted) branch to the DLQ.
+ * SCOPE (as of T2.3) and DOCUMENTED DEBT: the retry seam is now FILLED. A transient handler
+ * failure (TransientHandlerException or any other Throwable) is routed through
+ * RetryScheduler::retryOrFail — while attempts remain it is scheduled on the webhooks:retry
+ * zset with exponential, jittered backoff and the row goes back to 'received'; promoteDue()
+ * at the top of the loop moves due retries back onto the main queue (ADR 0013). Still DEBT
+ * (ADR 0013, Decision 5): there is no dead-letter queue (T2.4) yet, so a PERMANENT error and
+ * an EXHAUSTED transient one are still marked terminally 'failed' with last_error — honest,
+ * logged and audited, but not yet pushed to webhooks:dlq. The permanent catch block and the
+ * exhaustion fall-through inside retryOrFail are the exact seams T2.4 will reroute to the DLQ.
  * Graceful SIGTERM shutdown is T2.5 — its natural home is the `$job === null` idle tick.
  *
  * Resilience: connections are built ONCE before the loop, so a startup outage fails fast
@@ -43,6 +45,7 @@ use App\Exception\TransientHandlerException;
 use App\Handler\HandlerRegistry;
 use App\Handler\WebhookEvent;
 use App\Queue\Queue;
+use App\Queue\RetryScheduler;
 use App\Repository\EventRepository;
 
 /**
@@ -66,11 +69,16 @@ $config = require __DIR__ . '/bootstrap.php';
 $queue = Queue::fromConfig($config->redis());
 $events = new EventRepository(Connection::fromConfig($config->database()));
 $registry = new HandlerRegistry();
+$scheduler = new RetryScheduler($queue);
 
 fwrite(STDOUT, "worker: started, waiting for jobs on webhooks:queue\n");
 
 while (true) {
     try {
+        // T2.3: move any now-due retries from webhooks:retry back onto the main queue before
+        // blocking, so a scheduled retry is re-popped within one loop turn (ADR 0013, D1).
+        $scheduler->promoteDue();
+
         $job = $queue->consume(BLPOP_TIMEOUT_SECONDS);
 
         if ($job === null) {
@@ -126,9 +134,10 @@ while (true) {
         try {
             $handler->handle($event);
         } catch (TransientHandlerException $e) {
-            // SEAM for T2.3: schedule a retry (mark 'received', requeue with backoff) while
-            // attempts remain. Interim: marked 'failed'.
-            $events->markFailed($row['id'], $e->getMessage());
+            // T2.3: while attempts remain, schedule a retry with exponential backoff (mark the
+            // row back to 'received', ZADD the envelope to webhooks:retry); on exhaustion, fall
+            // through to interim markFailed — the T2.4 DLQ seam (ADR 0013, Decision 5).
+            $scheduler->retryOrFail($events, $row['id'], $job, $e->getMessage());
             continue;
         } catch (PermanentHandlerException $e) {
             // SEAM for T2.4: straight to webhooks:dlq, no retry. Interim: marked 'failed'.
@@ -136,9 +145,9 @@ while (true) {
             continue;
         } catch (\Throwable $e) {
             // Any OTHER Throwable from the handler is treated as transient (ADR 0011): an
-            // unforeseen bug should be retried, not silently dropped. SEAM for T2.3.
-            // Interim: marked 'failed'.
-            $events->markFailed($row['id'], $e->getMessage());
+            // unforeseen bug should be retried, not silently dropped — same retry path as
+            // TransientHandlerException (T2.3).
+            $scheduler->retryOrFail($events, $row['id'], $job, $e->getMessage());
             continue;
         }
 

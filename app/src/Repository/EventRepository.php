@@ -140,15 +140,41 @@ final class EventRepository
     }
 
     /**
+     * Schedule a transiently-failed event for another attempt (T2.3): set status BACK to
+     * 'received' so the guarded markProcessing() claim can win again once the retry is
+     * promoted off the zset, record the new attempt count, and persist the reason in
+     * last_error so the dashboard can show why the previous try failed.
+     *
+     * Writing $attempts here is the DB audit MIRROR of the envelope's incremented attempt
+     * (ADR 0013, Decision 3): both receive the SAME number from the single increment in
+     * RetryScheduler::retryOrFail(), so the dashboard (FR-9) shows the true try count while
+     * the envelope stays the control value on the wire.
+     *
+     * No status guard is needed: the worker holds the row in 'processing' (it just won the
+     * claim), so this is its own transition to make. processed_at is deliberately left
+     * untouched — a retry has NOT completed; only markProcessed() ever stamps it.
+     */
+    public function markForRetry(int $id, int $attempts, string $error): void
+    {
+        $statement = $this->pdo->prepare(
+            'UPDATE webhook_events
+             SET status = \'received\', attempts = :attempts, last_error = :error
+             WHERE id = :id',
+        );
+        $statement->execute(['id' => $id, 'attempts' => $attempts, 'error' => $error]);
+    }
+
+    /**
      * Mark an event failed and persist the human-readable reason in last_error (FR-9,
      * NFR-4: every failure is visible to the dashboard).
      *
-     * INTERIM behaviour for T2.2 (ADR 0012, Decision 3): the worker has no retry queue
-     * (T2.3) and no DLQ (T2.4) yet, so EVERY handler failure — transient, permanent or
-     * unforeseen — lands here. That over-commits a transient fault to a terminal 'failed'
-     * for now; it is honest and audited, not silent. T2.3/T2.4 will REPLACE the call sites
-     * (route transient → retry/'received', exhausted/permanent → DLQ), not necessarily
-     * this method.
+     * As of T2.3, a transient fault no longer lands here while attempts remain — it is
+     * rerouted to markForRetry()/scheduleRetry(). Only two cases still reach markFailed:
+     * a PERMANENT error, and a transient one whose attempts are EXHAUSTED. Both are INTERIM
+     * (ADR 0013, Decision 5): the DLQ list (T2.4) does not exist yet, so the event is marked
+     * terminally 'failed' with last_error — honest, audited, visible to the dashboard — but
+     * not yet pushed to webhooks:dlq. T2.4 reroutes these two call sites to the DLQ by
+     * addition, not by rewriting this method.
      */
     public function markFailed(int $id, string $error): void
     {
